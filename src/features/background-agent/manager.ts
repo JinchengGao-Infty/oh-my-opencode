@@ -47,6 +47,7 @@ import { getTaskToastManager } from "../task-toast-manager"
 import { MESSAGE_STORAGE, type StoredMessage } from "../hook-message-injector"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
+import { upsertWorktreeRun } from "../worktree-registry"
 
 type ProcessCleanupEvent = NodeJS.Signals | "beforeExit" | "exit"
 
@@ -407,6 +408,8 @@ export class BackgroundManager {
     if (worktree) {
       task.worktree = worktree
     }
+
+    this.persistWorktreeRun(task)
     task.progress = {
       toolCalls: 0,
       lastUpdate: new Date(),
@@ -473,6 +476,8 @@ export class BackgroundManager {
           existingTask.error = errorMessage
         }
         existingTask.completedAt = new Date()
+
+        this.persistWorktreeRun(existingTask)
         if (existingTask.concurrencyKey) {
           this.concurrencyManager.release(existingTask.concurrencyKey)
           existingTask.concurrencyKey = undefined
@@ -754,6 +759,8 @@ export class BackgroundManager {
       const errorMessage = error instanceof Error ? error.message : String(error)
       existingTask.error = errorMessage
       existingTask.completedAt = new Date()
+
+      this.persistWorktreeRun(existingTask)
 
       // Release concurrency on error to prevent slot leaks
       if (existingTask.concurrencyKey) {
@@ -1285,6 +1292,8 @@ export class BackgroundManager {
       task.error = reason
     }
 
+    this.persistWorktreeRun(task)
+
     this.taskHistory.record(task.parentSessionID, { id: task.id, sessionID: task.sessionID, agent: task.agent, description: task.description, status: "cancelled", category: task.category, startedAt: task.startedAt, completedAt: task.completedAt })
 
     if (task.concurrencyKey) {
@@ -1438,6 +1447,8 @@ export class BackgroundManager {
     task.completedAt = new Date()
     this.taskHistory.record(task.parentSessionID, { id: task.id, sessionID: task.sessionID, agent: task.agent, description: task.description, status: "completed", category: task.category, startedAt: task.startedAt, completedAt: task.completedAt })
 
+    this.persistWorktreeRun(task)
+
     // Release concurrency BEFORE any async operations to prevent slot leaks
     if (task.concurrencyKey) {
       this.concurrencyManager.release(task.concurrencyKey)
@@ -1515,7 +1526,7 @@ export class BackgroundManager {
     const statusText = task.status === "completed" ? "COMPLETED" : task.status === "interrupt" ? "INTERRUPTED" : "CANCELLED"
     const errorInfo = task.error ? `\n**Error:** ${task.error}` : ""
     const worktreeInfo = task.worktree
-      ? `\n\n**Worktree:** \`${task.worktree.path}\`\n**Branch:** \`${task.worktree.branch}\``
+      ? `\n\n**Worktree:** \`${task.worktree.path}\`\n**Branch:** \`${task.worktree.branch}\`\n**Diff:** \`worktree_diff(task_id=\"${task.id}\")\`\n**Merge:** \`worktree_merge(task_id=\"${task.id}\")\``
       : ""
 
     let notification: string
@@ -1531,6 +1542,7 @@ export class BackgroundManager {
 ${completedTasksText || `- \`${task.id}\`: ${task.description}`}
 
 Use \`background_output(task_id="<id>")\` to retrieve each result.
+For worktree-isolated tasks: use \`worktree_diff(task_id="<id>")\` and \`worktree_merge(task_id="<id>")\`.
 </system-reminder>`
     } else {
       // Individual completion - silent notification
@@ -1757,6 +1769,31 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
     return false
   }
 
+  private persistWorktreeRun(task: BackgroundTask): void {
+    if (!task.worktree) return
+
+    try {
+      const nowIso = new Date().toISOString()
+      upsertWorktreeRun(task.worktree.repoRoot, {
+        id: task.id,
+        agent: task.agent,
+        description: task.description,
+        status: task.status,
+        sessionID: task.sessionID,
+        parentSessionID: task.parentSessionID,
+        worktree: task.worktree,
+        createdAt: task.queuedAt?.toISOString() ?? task.startedAt?.toISOString() ?? nowIso,
+        updatedAt: nowIso,
+        ...(task.completedAt ? { completedAt: task.completedAt.toISOString() } : {}),
+      })
+    } catch (err) {
+      log("[background-agent] Failed to persist worktree run", {
+        taskId: task.id,
+        error: String(err),
+      })
+    }
+  }
+
   private pruneStaleTasksAndNotifications(): void {
     const now = Date.now()
 
@@ -1780,6 +1817,8 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
         task.status = "error"
         task.error = errorMessage
         task.completedAt = new Date()
+
+        this.persistWorktreeRun(task)
         if (task.concurrencyKey) {
           this.concurrencyManager.release(task.concurrencyKey)
           task.concurrencyKey = undefined
@@ -1859,6 +1898,8 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
         task.error = `Stale timeout (no activity for ${staleMinutes}min since start)`
         task.completedAt = new Date()
 
+        this.persistWorktreeRun(task)
+
         if (task.concurrencyKey) {
           this.concurrencyManager.release(task.concurrencyKey)
           task.concurrencyKey = undefined
@@ -1887,6 +1928,8 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
       task.status = "cancelled"
       task.error = `Stale timeout (no activity for ${staleMinutes}min)`
       task.completedAt = new Date()
+
+      this.persistWorktreeRun(task)
 
       if (task.concurrencyKey) {
         this.concurrencyManager.release(task.concurrencyKey)
