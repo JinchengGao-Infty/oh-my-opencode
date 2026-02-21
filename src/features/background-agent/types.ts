@@ -41,6 +41,8 @@ export interface BackgroundTask {
   directory?: string
   isolation?: BackgroundTaskIsolation
   worktree?: BackgroundTaskWorktree
+  /** Optional Hydra markdown task ID to gate execution by dependencies */
+  hydraTaskId?: string
   queuedAt?: Date
   startedAt?: Date
   completedAt?: Date
@@ -83,6 +85,7 @@ export interface LaunchInput {
   parentTools?: Record<string, boolean>
   model?: { providerID: string; modelID: string; variant?: string }
   isolation?: BackgroundTaskIsolation
+  hydraTaskId?: string
   /** Fallback chain for runtime retry on model errors */
   fallbackChain?: FallbackEntry[]
   isUnstableAgent?: boolean

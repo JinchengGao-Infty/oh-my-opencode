@@ -38,6 +38,7 @@ export { createCallOmoAgent } from "./call-omo-agent"
 export { createLookAt } from "./look-at"
 export { createDelegateTask } from "./delegate-task"
 export { createWorktreeTools } from "./worktree"
+export { createHydraTaskTools } from "./hydra-task"
 export {
   createTaskCreateTool,
   createTaskGetTool,

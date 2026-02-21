@@ -31,6 +31,7 @@ export async function executeUnstableAgentTask(
       parentTools: getSessionTools(parentContext.sessionID),
       model: categoryModel,
       isolation: args.isolation,
+      hydraTaskId: args.hydra_task_id,
       skills: args.load_skills.length > 0 ? args.load_skills : undefined,
       skillContent: systemContent,
       category: args.category,

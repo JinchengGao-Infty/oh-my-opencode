@@ -17,6 +17,7 @@ import {
   readConnectedProvidersCache,
   readProviderModelsCache,
   removeAgentWorktree,
+  resolveRepoRoot,
   resolveInheritedPromptTools,
   createInternalAgentTextPart,
 } from "../../shared"
@@ -48,6 +49,7 @@ import { MESSAGE_STORAGE, type StoredMessage } from "../hook-message-injector"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { upsertWorktreeRun } from "../worktree-registry"
+import { HydraTask, HydraTaskManager } from "../hydra-task"
 
 type ProcessCleanupEvent = NodeJS.Signals | "beforeExit" | "exit"
 
@@ -165,6 +167,7 @@ export class BackgroundManager {
       prompt: input.prompt,
       agent: input.agent,
       isolation: input.isolation ?? "shared",
+      hydraTaskId: input.hydraTaskId,
       parentSessionID: input.parentSessionID,
       parentMessageID: input.parentMessageID,
       parentModel: input.parentModel,
@@ -209,6 +212,11 @@ export class BackgroundManager {
     // Trigger processing (fire-and-forget)
     this.processKey(key)
 
+    // Keep a lightweight scheduler alive for dependency-gated tasks.
+    if (task.hydraTaskId) {
+      this.startPolling()
+    }
+
     return task
   }
 
@@ -221,14 +229,100 @@ export class BackgroundManager {
 
     try {
       const queue = this.queuesByKey.get(key)
+      const projectRoot = resolveHydraProjectRoot(this.directory)
       while (queue && queue.length > 0) {
-        const item = queue[0]
+        let runnableIndex = -1
+
+        for (let i = 0; i < queue.length; i++) {
+          const candidate = queue[i]
+          if (!candidate) continue
+
+          if (candidate.task.status === "cancelled" || candidate.task.status === "error") {
+            queue.splice(i, 1)
+            i--
+            continue
+          }
+
+          const hydraTaskId = candidate.input.hydraTaskId ?? candidate.task.hydraTaskId
+          if (hydraTaskId) {
+            const hydraTask = HydraTaskManager.get(projectRoot, hydraTaskId)
+            if (!hydraTask) {
+              candidate.task.status = "error"
+              candidate.task.error = `Hydra task not found: ${hydraTaskId}`
+              candidate.task.completedAt = new Date()
+
+              const toastManager = getTaskToastManager()
+              if (toastManager) {
+                toastManager.updateTask(candidate.task.id, "error")
+              }
+
+              this.markForNotification(candidate.task)
+              this.cleanupPendingByParent(candidate.task)
+              this.enqueueNotificationForParent(candidate.task.parentSessionID, () => this.notifyParentSession(candidate.task))
+                .catch((err) => log("[background-agent] Failed to notify hydra task missing:", err))
+
+              queue.splice(i, 1)
+              i--
+              continue
+            }
+
+            if (hydraTask.meta.status !== "pending") {
+              candidate.task.status = "cancelled"
+              candidate.task.error = `Hydra task ${hydraTaskId} is '${hydraTask.meta.status}', not runnable.`
+              candidate.task.completedAt = new Date()
+
+              this.markForNotification(candidate.task)
+              this.cleanupPendingByParent(candidate.task)
+              this.enqueueNotificationForParent(candidate.task.parentSessionID, () => this.notifyParentSession(candidate.task))
+                .catch((err) => log("[background-agent] Failed to notify hydra task non-pending:", err))
+
+              queue.splice(i, 1)
+              i--
+              continue
+            }
+
+            const readiness = HydraTaskManager.checkReadiness(projectRoot, hydraTaskId)
+            if (readiness.kind === "blocked") {
+              continue
+            }
+            if (readiness.kind === "error") {
+              candidate.task.status = "error"
+              candidate.task.error = `Hydra dependency error: ${readiness.reason}`
+              candidate.task.completedAt = new Date()
+
+              this.updateHydraTaskStatus(candidate.task, "failed", readiness.reason)
+              this.persistWorktreeRun(candidate.task)
+
+              const toastManager = getTaskToastManager()
+              if (toastManager) {
+                toastManager.updateTask(candidate.task.id, "error")
+              }
+
+              this.markForNotification(candidate.task)
+              this.cleanupPendingByParent(candidate.task)
+              this.enqueueNotificationForParent(candidate.task.parentSessionID, () => this.notifyParentSession(candidate.task))
+                .catch((err) => log("[background-agent] Failed to notify hydra dependency error:", err))
+
+              queue.splice(i, 1)
+              i--
+              continue
+            }
+          }
+
+          runnableIndex = i
+          break
+        }
+
+        if (runnableIndex === -1) {
+          break
+        }
+
+        const item = queue.splice(runnableIndex, 1)[0]!
 
         await this.concurrencyManager.acquire(key)
 
         if (item.task.status === "cancelled" || item.task.status === "error") {
           this.concurrencyManager.release(key)
-          queue.shift()
           continue
         }
 
@@ -242,6 +336,9 @@ export class BackgroundManager {
             item.task.status = "error"
             item.task.error = message
             item.task.completedAt = new Date()
+
+            this.updateHydraTaskStatus(item.task, "failed", message)
+            this.persistWorktreeRun(item.task)
             this.taskHistory.record(item.input.parentSessionID, {
               id: item.task.id,
               agent: item.input.agent,
@@ -270,8 +367,6 @@ export class BackgroundManager {
             this.concurrencyManager.release(key)
           }
         }
-
-        queue.shift()
       }
 
       if (queue && queue.length === 0) {
@@ -409,6 +504,12 @@ export class BackgroundManager {
       task.worktree = worktree
     }
 
+    const hydraTaskId = input.hydraTaskId ?? task.hydraTaskId
+    if (hydraTaskId) {
+      task.hydraTaskId = hydraTaskId
+      this.updateHydraTaskStatus(task, "running")
+    }
+
     this.persistWorktreeRun(task)
     task.progress = {
       toolCalls: 0,
@@ -477,6 +578,7 @@ export class BackgroundManager {
         }
         existingTask.completedAt = new Date()
 
+        this.updateHydraTaskStatus(existingTask, "failed", existingTask.error)
         this.persistWorktreeRun(existingTask)
         if (existingTask.concurrencyKey) {
           this.concurrencyManager.release(existingTask.concurrencyKey)
@@ -760,6 +862,7 @@ export class BackgroundManager {
       existingTask.error = errorMessage
       existingTask.completedAt = new Date()
 
+      this.updateHydraTaskStatus(existingTask, "failed", existingTask.error)
       this.persistWorktreeRun(existingTask)
 
       // Release concurrency on error to prevent slot leaks
@@ -1141,6 +1244,7 @@ export class BackgroundManager {
       prompt: task.prompt,
       agent: task.agent,
       isolation: task.isolation,
+      hydraTaskId: task.hydraTaskId,
       parentSessionID: task.parentSessionID,
       parentMessageID: task.parentMessageID,
       parentModel: task.parentModel,
@@ -1292,6 +1396,7 @@ export class BackgroundManager {
       task.error = reason
     }
 
+    this.updateHydraTaskStatus(task, "cancelled", task.error)
     this.persistWorktreeRun(task)
 
     this.taskHistory.record(task.parentSessionID, { id: task.id, sessionID: task.sessionID, agent: task.agent, description: task.description, status: "cancelled", category: task.category, startedAt: task.startedAt, completedAt: task.completedAt })
@@ -1447,6 +1552,7 @@ export class BackgroundManager {
     task.completedAt = new Date()
     this.taskHistory.record(task.parentSessionID, { id: task.id, sessionID: task.sessionID, agent: task.agent, description: task.description, status: "completed", category: task.category, startedAt: task.startedAt, completedAt: task.completedAt })
 
+    this.updateHydraTaskStatus(task, "done")
     this.persistWorktreeRun(task)
 
     // Release concurrency BEFORE any async operations to prevent slot leaks
@@ -1794,6 +1900,23 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
     }
   }
 
+  private updateHydraTaskStatus(task: BackgroundTask, status: HydraTask.Status, reason?: string): void {
+    const hydraTaskId = task.hydraTaskId
+    if (!hydraTaskId) return
+
+    const projectRoot = resolveHydraProjectRoot(this.directory)
+    try {
+      HydraTaskManager.updateStatus(projectRoot, hydraTaskId, status, reason)
+    } catch (err) {
+      log("[background-agent] Failed to update hydra task status", {
+        hydraTaskId,
+        status,
+        reason,
+        error: String(err),
+      })
+    }
+  }
+
   private pruneStaleTasksAndNotifications(): void {
     const now = Date.now()
 
@@ -1817,6 +1940,8 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
         task.status = "error"
         task.error = errorMessage
         task.completedAt = new Date()
+
+        this.updateHydraTaskStatus(task, "failed", task.error)
 
         this.persistWorktreeRun(task)
         if (task.concurrencyKey) {
@@ -1898,6 +2023,8 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
         task.error = `Stale timeout (no activity for ${staleMinutes}min since start)`
         task.completedAt = new Date()
 
+        this.updateHydraTaskStatus(task, "cancelled", task.error)
+
         this.persistWorktreeRun(task)
 
         if (task.concurrencyKey) {
@@ -1929,6 +2056,8 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
       task.error = `Stale timeout (no activity for ${staleMinutes}min)`
       task.completedAt = new Date()
 
+      this.updateHydraTaskStatus(task, "cancelled", task.error)
+
       this.persistWorktreeRun(task)
 
       if (task.concurrencyKey) {
@@ -1952,6 +2081,15 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
     this.pollingInFlight = true
     try {
       this.pruneStaleTasksAndNotifications()
+
+      // Dependency-gated tasks may become runnable over time.
+      // Periodically re-kick queued keys even when there are no running sessions.
+      for (const [key, queue] of this.queuesByKey.entries()) {
+        if (queue.length === 0) continue
+        void this.processKey(key).catch((err) => {
+          log("[background-agent] processKey failed during polling:", err)
+        })
+      }
 
       const statusResult = await this.client.session.status()
       const allStatuses = normalizeSDKResponse(statusResult, {} as Record<string, { type: string }>)
@@ -2153,6 +2291,14 @@ function hasPartialAgentOrModel(message: StoredMessage): boolean {
   const hasAgent = !!message.agent && !isCompactionAgent(message.agent)
   const hasModel = !!message.model?.providerID && !!message.model?.modelID
   return hasAgent || hasModel
+}
+
+function resolveHydraProjectRoot(directory: string): string {
+  try {
+    return resolveRepoRoot(directory)
+  } catch {
+    return directory
+  }
 }
 
 function findNearestMessageExcludingCompaction(messageDir: string): StoredMessage | null {
