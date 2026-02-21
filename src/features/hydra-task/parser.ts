@@ -2,6 +2,58 @@ import { HydraTask } from "./task"
 import { readFileSync, writeFileSync } from "node:fs"
 
 export namespace HydraTaskParser {
+  function escapeReason(value: string): string {
+    const normalized = value.replace(/\r\n/g, "\n")
+    let out = ""
+    for (let i = 0; i < normalized.length; i++) {
+      const ch = normalized[i]!
+      if (ch === "\\") {
+        out += "\\\\"
+        continue
+      }
+      if (ch === "\n") {
+        out += "\\n"
+        continue
+      }
+      out += ch
+    }
+    return out
+  }
+
+  function unescapeReason(value: string): string {
+    let out = ""
+    for (let i = 0; i < value.length; i++) {
+      const ch = value[i]!
+      if (ch !== "\\") {
+        out += ch
+        continue
+      }
+
+      const next = value[i + 1]
+      if (next === undefined) {
+        out += "\\"
+        continue
+      }
+
+      if (next === "\\") {
+        out += "\\"
+        i++
+        continue
+      }
+
+      if (next === "n") {
+        out += "\n"
+        i++
+        continue
+      }
+
+      // Preserve unknown escape sequences literally.
+      out += "\\" + next
+      i++
+    }
+    return out
+  }
+
   export function parse(content: string): HydraTask.Info {
     const text = content.replace(/\r\n/g, "\n")
     const lines = text.split("\n")
@@ -50,7 +102,7 @@ export namespace HydraTaskParser {
 
       if (key === "reason") {
         if (!val) continue
-        meta.reason = val.replace(/\\n/g, "\n")
+        meta.reason = unescapeReason(val)
         continue
       }
 
@@ -85,8 +137,7 @@ export namespace HydraTaskParser {
     lines.push(`- id: ${info.meta.id}`)
     lines.push(`- status: ${info.meta.status}`)
     if (info.meta.reason) {
-      const escaped = info.meta.reason.replace(/\r\n/g, "\n").replace(/\n/g, "\\n")
-      lines.push(`- reason: ${escaped}`)
+      lines.push(`- reason: ${escapeReason(info.meta.reason)}`)
     }
     if (info.meta.agentClass) lines.push(`- agentClass: ${info.meta.agentClass}`)
     if (info.meta.model) lines.push(`- model: ${info.meta.model}`)

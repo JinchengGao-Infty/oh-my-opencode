@@ -132,4 +132,17 @@ describe("worktree-registry storage", () => {
     // then
     expect(result).toBe(null)
   })
+
+  test("#given schema-invalid json #when reading #then returns null", () => {
+    // given
+    const path = getWorktreeRunPath(TEST_ROOT, "bg_schema_invalid")
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify({ id: "bg_schema_invalid", status: "wat" }, null, 2), "utf-8")
+
+    // when
+    const result = readWorktreeRun(TEST_ROOT, "bg_schema_invalid")
+
+    // then
+    expect(result).toBe(null)
+  })
 })

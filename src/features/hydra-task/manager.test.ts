@@ -349,6 +349,23 @@ describe("HydraTaskManager", () => {
     expect(parsed?.meta.reason).toBe("line1\nline2:with:colons")
   })
 
+  test("#given reason with literal \\n #when serializing and parsing #then preserves literal sequence", () => {
+    // given
+    const original = HydraTaskManager.create(TEST_ROOT, {
+      title: "Literal",
+      description: "x",
+    })
+    HydraTaskManager.updateStatus(TEST_ROOT, original.meta.id, "running")
+    const reason = "literal \\n" // backslash + n
+    HydraTaskManager.updateStatus(TEST_ROOT, original.meta.id, "failed", reason)
+
+    // when
+    const parsed = HydraTaskManager.get(TEST_ROOT, original.meta.id)
+
+    // then
+    expect(parsed?.meta.reason).toBe(reason)
+  })
+
   test("#given pending task #when attempting pending->done #then throws", () => {
     // given
     const task = HydraTaskManager.create(TEST_ROOT, {

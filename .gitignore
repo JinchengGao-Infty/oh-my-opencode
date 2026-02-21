@@ -35,3 +35,7 @@ test-injection/
 notepad.md
 oauth-success.html
 *.bun-build
+
+# Test artifacts
+.test-worktree-registry/
+.test-hydra-task/

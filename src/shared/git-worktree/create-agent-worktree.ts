@@ -48,10 +48,24 @@ export function createAgentWorktree(input: {
       })
     }
 
-    runGitOrThrow(["branch", "-D", branch], {
-      cwd: repoRoot,
-      timeoutMs: 10_000,
-    })
+    try {
+      runGitOrThrow(["branch", "-D", branch], {
+        cwd: repoRoot,
+        timeoutMs: 10_000,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        [
+          `Failed to delete existing agent branch '${branch}'.`,
+          "It may still be checked out by another worktree or your main workspace.",
+          `Repo: ${repoRoot}`,
+          `Hint: run 'git -C "${repoRoot}" worktree list' and remove/switch the worktree using this branch, then retry.`,
+          "",
+          `Original error: ${message}`,
+        ].join("\n")
+      )
+    }
   }
 
   runGitOrThrow(["worktree", "add", worktreePath, "-b", branch, baseRef], {

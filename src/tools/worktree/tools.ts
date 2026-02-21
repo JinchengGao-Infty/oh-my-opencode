@@ -173,6 +173,18 @@ export function createWorktreeTools(ctx: PluginInput): Record<string, ToolDefini
       const targetBranch = targetBranchRaw || currentHead
       const confirmOtherBranch = args.confirm_other_branch === true
 
+      // Safety: if the user's HEAD moved since worktree creation, do not guess.
+      if (!targetBranchRaw && run.worktree.baseRef && run.worktree.baseRef !== currentHead) {
+        return [
+          "Refusing to merge without explicit target_branch because HEAD changed since this worktree was created.",
+          `- current_head: ${currentHead}`,
+          `- recorded_baseRef: ${run.worktree.baseRef}`,
+          "",
+          `If you want to merge into current_head, rerun with target_branch=\"${currentHead}\".`,
+          `If you want to merge into recorded_baseRef, rerun with target_branch=\"${run.worktree.baseRef}\" confirm_other_branch=true.`,
+        ].join("\n")
+      }
+
       if (targetBranchRaw && targetBranch !== currentHead && !confirmOtherBranch) {
         return [
           "Refusing to merge into a non-HEAD branch by default.",
