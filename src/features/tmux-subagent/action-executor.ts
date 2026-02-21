@@ -81,7 +81,8 @@ export async function executeAction(
       action.newSessionId,
       action.description,
       ctx.config,
-      ctx.serverUrl
+      ctx.serverUrl,
+      action.directory,
     )
     if (result.success) {
       await enforceLayoutAndMainPane(ctx)
@@ -98,7 +99,8 @@ export async function executeAction(
     ctx.config,
     ctx.serverUrl,
     action.targetPaneId,
-    action.splitDirection
+    action.splitDirection,
+    action.directory,
   )
 
   if (result.success) {

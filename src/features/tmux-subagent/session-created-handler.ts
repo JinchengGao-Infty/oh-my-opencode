@@ -47,6 +47,20 @@ export async function handleSessionCreated(
   const sessionId = info.id
   const title = info.title ?? "Subagent"
 
+  let sessionDirectory: string | undefined
+  try {
+    const sessionResp = await deps.client.session.get({ path: { id: sessionId } })
+    const dir = (sessionResp as { data?: { directory?: unknown } })?.data?.directory
+    if (typeof dir === "string" && dir.trim().length > 0) {
+      sessionDirectory = dir
+    }
+  } catch (err) {
+    log("[tmux-session-manager] Failed to resolve session directory", {
+      sessionId,
+      error: String(err),
+    })
+  }
+
   if (deps.sessions.has(sessionId) || deps.pendingSessions.has(sessionId)) {
     log("[tmux-session-manager] session already tracked or pending", { sessionId })
     return
@@ -99,7 +113,14 @@ export async function handleSessionCreated(
       return
     }
 
-    const result = await executeActions(decision.actions, {
+    const actionsWithDirectory = decision.actions.map((action) => {
+      if ((action.type === "spawn" || action.type === "replace") && sessionDirectory) {
+        return { ...action, directory: sessionDirectory }
+      }
+      return action
+    })
+
+    const result = await executeActions(actionsWithDirectory, {
       config: deps.tmuxConfig,
       serverUrl: deps.serverUrl,
       windowState: state,

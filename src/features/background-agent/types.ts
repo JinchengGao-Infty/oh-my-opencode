@@ -8,6 +8,18 @@ export type BackgroundTaskStatus =
   | "cancelled"
   | "interrupt"
 
+export type BackgroundTaskIsolation = "shared" | "worktree"
+
+export interface BackgroundTaskWorktree {
+  repoRoot: string
+  /** Filesystem path to the linked git worktree */
+  path: string
+  /** Branch checked out in the worktree */
+  branch: string
+  /** Base ref used when the worktree/branch was created */
+  baseRef: string
+}
+
 export interface TaskProgress {
   toolCalls: number
   lastTool?: string
@@ -25,6 +37,10 @@ export interface BackgroundTask {
   prompt: string
   agent: string
   status: BackgroundTaskStatus
+  /** Child session working directory used for session.create + promptAsync */
+  directory?: string
+  isolation?: BackgroundTaskIsolation
+  worktree?: BackgroundTaskWorktree
   queuedAt?: Date
   startedAt?: Date
   completedAt?: Date
@@ -66,6 +82,7 @@ export interface LaunchInput {
   parentAgent?: string
   parentTools?: Record<string, boolean>
   model?: { providerID: string; modelID: string; variant?: string }
+  isolation?: BackgroundTaskIsolation
   /** Fallback chain for runtime retry on model errors */
   fallbackChain?: FallbackEntry[]
   isUnstableAgent?: boolean

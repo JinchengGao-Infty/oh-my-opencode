@@ -9,12 +9,14 @@ import type { FallbackEntry } from "../../shared/model-requirements"
 import { TaskHistory } from "./task-history"
 import {
   log,
+  createAgentWorktree,
   getAgentToolRestrictions,
   normalizePromptTools,
   normalizeSDKResponse,
   promptWithModelSuggestionRetry,
   readConnectedProvidersCache,
   readProviderModelsCache,
+  removeAgentWorktree,
   resolveInheritedPromptTools,
   createInternalAgentTextPart,
 } from "../../shared"
@@ -161,6 +163,7 @@ export class BackgroundManager {
       description: input.description,
       prompt: input.prompt,
       agent: input.agent,
+      isolation: input.isolation ?? "shared",
       parentSessionID: input.parentSessionID,
       parentMessageID: input.parentMessageID,
       parentModel: input.parentModel,
@@ -232,6 +235,34 @@ export class BackgroundManager {
           await this.startTask(item)
         } catch (error) {
           log("[background-agent] Error starting task:", error)
+
+          if (item.task.status === "pending") {
+            const message = error instanceof Error ? error.message : String(error)
+            item.task.status = "error"
+            item.task.error = message
+            item.task.completedAt = new Date()
+            this.taskHistory.record(item.input.parentSessionID, {
+              id: item.task.id,
+              agent: item.input.agent,
+              description: item.input.description,
+              status: "error",
+              category: item.input.category,
+              completedAt: item.task.completedAt,
+            })
+
+            const toastManager = getTaskToastManager()
+            if (toastManager) {
+              toastManager.updateTask(item.task.id, "error")
+            }
+
+            this.markForNotification(item.task)
+            this.cleanupPendingByParent(item.task)
+            this.enqueueNotificationForParent(item.task.parentSessionID, () => this.notifyParentSession(item.task))
+              .catch((err) => {
+                log("[background-agent] Failed to notify startTask error:", err)
+              })
+          }
+
           // Release concurrency slot if startTask failed and didn't release it itself
           // This prevents slot leaks when errors occur after acquire but before task.concurrencyKey is set
           if (!item.task.concurrencyKey) {
@@ -240,6 +271,10 @@ export class BackgroundManager {
         }
 
         queue.shift()
+      }
+
+      if (queue && queue.length === 0) {
+        this.queuesByKey.delete(key)
       }
     } finally {
       this.processingKeys.delete(key)
@@ -266,21 +301,74 @@ export class BackgroundManager {
     const parentDirectory = parentSession?.data?.directory ?? this.directory
     log(`[background-agent] Parent dir: ${parentSession?.data?.directory}, using: ${parentDirectory}`)
 
-    const createResult = await this.client.session.create({
-      body: {
-        parentID: input.parentSessionID,
-        title: `${input.description} (@${input.agent} subagent)`,
-      } as any,
-      query: {
-        directory: parentDirectory,
-      },
-    })
+    const isolation = input.isolation ?? task.isolation ?? "shared"
+    let taskDirectory = parentDirectory
+    let worktree = task.worktree
+    let createdWorktreeThisStart = false
 
-    if (createResult.error) {
-      throw new Error(`Failed to create background session: ${createResult.error}`)
+    if (isolation === "worktree") {
+      if (worktree) {
+        taskDirectory = worktree.path
+      } else {
+        const created = createAgentWorktree({
+          directory: parentDirectory,
+          agent: input.agent,
+          runId: task.id,
+        })
+        worktree = {
+          repoRoot: created.repoRoot,
+          path: created.path,
+          branch: created.branch,
+          baseRef: created.baseRef,
+        }
+        taskDirectory = worktree.path
+        createdWorktreeThisStart = true
+      }
+    }
+
+    let createResult: Awaited<ReturnType<typeof this.client.session.create>>
+    try {
+      createResult = await this.client.session.create({
+        body: {
+          parentID: input.parentSessionID,
+          title: `${input.description} (@${input.agent} subagent)`,
+        } as any,
+        query: {
+          directory: taskDirectory,
+        },
+      })
+    } catch (error) {
+      if (createdWorktreeThisStart && worktree) {
+        removeAgentWorktree({
+          repoRoot: worktree.repoRoot,
+          path: worktree.path,
+          branch: worktree.branch,
+        })
+      }
+      throw error
+    }
+
+    if ("error" in createResult && createResult.error) {
+      if (createdWorktreeThisStart && worktree) {
+        removeAgentWorktree({
+          repoRoot: worktree.repoRoot,
+          path: worktree.path,
+          branch: worktree.branch,
+        })
+      }
+      const err = createResult.error
+      const message = err instanceof Error ? err.message : String(err)
+      throw new Error(`Failed to create background session: ${message}`)
     }
 
     if (!createResult.data?.id) {
+      if (createdWorktreeThisStart && worktree) {
+        removeAgentWorktree({
+          repoRoot: worktree.repoRoot,
+          path: worktree.path,
+          branch: worktree.branch,
+        })
+      }
       throw new Error("Failed to create background session: API returned no session ID")
     }
 
@@ -314,6 +402,11 @@ export class BackgroundManager {
     task.status = "running"
     task.startedAt = new Date()
     task.sessionID = sessionID
+    task.directory = taskDirectory
+    task.isolation = isolation
+    if (worktree) {
+      task.worktree = worktree
+    }
     task.progress = {
       toolCalls: 0,
       lastUpdate: new Date(),
@@ -350,6 +443,7 @@ export class BackgroundManager {
 
     promptWithModelSuggestionRetry(this.client, {
       path: { id: sessionID },
+      ...(taskDirectory ? { query: { directory: taskDirectory } } : {}),
       body: {
         agent: input.agent,
         ...(launchModel ? { model: launchModel } : {}),
@@ -622,8 +716,22 @@ export class BackgroundManager {
       : undefined
     const resumeVariant = existingTask.model?.variant
 
-    this.client.session.promptAsync({
+    let resumeDirectory = existingTask.directory
+    const sessionGetter = (this.client.session as unknown as { get?: unknown }).get
+    if (!resumeDirectory && existingTask.sessionID && typeof sessionGetter === "function") {
+      const resp = await this.client.session
+        .get({ path: { id: existingTask.sessionID } })
+        .catch(() => null)
+      const dir = resp?.data?.directory
+      if (typeof dir === "string" && dir.trim().length > 0) {
+        resumeDirectory = dir
+        existingTask.directory = dir
+      }
+    }
+
+    promptWithModelSuggestionRetry(this.client, {
       path: { id: existingTask.sessionID },
+      ...(resumeDirectory ? { query: { directory: resumeDirectory } } : {}),
       body: {
         agent: existingTask.agent,
         ...(resumeModel ? { model: resumeModel } : {}),
@@ -1025,6 +1133,7 @@ export class BackgroundManager {
       description: task.description,
       prompt: task.prompt,
       agent: task.agent,
+      isolation: task.isolation,
       parentSessionID: task.parentSessionID,
       parentMessageID: task.parentMessageID,
       parentModel: task.parentModel,
@@ -1175,6 +1284,7 @@ export class BackgroundManager {
     if (reason) {
       task.error = reason
     }
+
     this.taskHistory.record(task.parentSessionID, { id: task.id, sessionID: task.sessionID, agent: task.agent, description: task.description, status: "cancelled", category: task.category, startedAt: task.startedAt, completedAt: task.completedAt })
 
     if (task.concurrencyKey) {
@@ -1404,6 +1514,9 @@ export class BackgroundManager {
 
     const statusText = task.status === "completed" ? "COMPLETED" : task.status === "interrupt" ? "INTERRUPTED" : "CANCELLED"
     const errorInfo = task.error ? `\n**Error:** ${task.error}` : ""
+    const worktreeInfo = task.worktree
+      ? `\n\n**Worktree:** \`${task.worktree.path}\`\n**Branch:** \`${task.worktree.branch}\``
+      : ""
 
     let notification: string
     if (allComplete) {
@@ -1425,7 +1538,7 @@ Use \`background_output(task_id="<id>")\` to retrieve each result.
 [BACKGROUND TASK ${statusText}]
 **ID:** \`${task.id}\`
 **Description:** ${task.description}
-**Duration:** ${duration}${errorInfo}
+**Duration:** ${duration}${errorInfo}${worktreeInfo}
 
 **${remainingCount} task${remainingCount === 1 ? "" : "s"} still in progress.** You WILL be notified when ALL complete.
 Do NOT poll - continue productive work.
@@ -1795,12 +1908,12 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
     if (this.pollingInFlight) return
     this.pollingInFlight = true
     try {
-    this.pruneStaleTasksAndNotifications()
+      this.pruneStaleTasksAndNotifications()
 
-    const statusResult = await this.client.session.status()
-    const allStatuses = normalizeSDKResponse(statusResult, {} as Record<string, { type: string }>)
+      const statusResult = await this.client.session.status()
+      const allStatuses = normalizeSDKResponse(statusResult, {} as Record<string, { type: string }>)
 
-    await this.checkAndInterruptStaleTasks(allStatuses)
+      await this.checkAndInterruptStaleTasks(allStatuses)
 
     for (const task of this.tasks.values()) {
       if (task.status !== "running") continue
@@ -1857,9 +1970,10 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
       }
     }
 
-    if (!this.hasRunningTasks()) {
-      this.stopPolling()
-    }
+      const hasQueued = Array.from(this.queuesByKey.values()).some((q) => q.length > 0)
+      if (!this.hasRunningTasks() && !hasQueued) {
+        this.stopPolling()
+      }
     } finally {
       this.pollingInFlight = false
     }

@@ -13,6 +13,7 @@ export async function spawnTmuxPane(
 	serverUrl: string,
 	targetPaneId?: string,
 	splitDirection: SplitDirection = "-h",
+	directory?: string,
 ): Promise<SpawnPaneResult> {
 	const { log } = await import("../../logger")
 
@@ -48,7 +49,14 @@ export async function spawnTmuxPane(
 
 	log("[spawnTmuxPane] all checks passed, spawning...")
 
-	const opencodeCmd = `opencode attach ${serverUrl} --session ${sessionId}`
+	const opencodeArgs = [
+		"opencode",
+		"attach",
+		serverUrl,
+		"--session",
+		sessionId,
+		...(directory ? ["--dir", directory] : []),
+	]
 
 	const args = [
 		"split-window",
@@ -58,7 +66,7 @@ export async function spawnTmuxPane(
 		"-F",
 		"#{pane_id}",
 		...(targetPaneId ? ["-t", targetPaneId] : []),
-		opencodeCmd,
+		...opencodeArgs,
 	]
 
 	const proc = spawn([tmux, ...args], { stdout: "pipe", stderr: "pipe" })

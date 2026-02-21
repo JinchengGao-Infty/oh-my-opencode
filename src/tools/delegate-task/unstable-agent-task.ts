@@ -30,6 +30,7 @@ export async function executeUnstableAgentTask(
       parentAgent: parentContext.agent,
       parentTools: getSessionTools(parentContext.sessionID),
       model: categoryModel,
+      isolation: args.isolation,
       skills: args.load_skills.length > 0 ? args.load_skills : undefined,
       skillContent: systemContent,
       category: args.category,

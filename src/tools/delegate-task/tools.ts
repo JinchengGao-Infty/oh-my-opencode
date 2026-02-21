@@ -66,6 +66,7 @@ REQUIRED: You MUST provide EITHER category OR subagent_type (one of them is REQU
 ${categoryList}
 - subagent_type: Use specific agent directly
 - run_in_background: true=async (returns task_id), false=sync (waits for result). Default: false. Use background=true ONLY for parallel exploration with 5+ independent queries.
+- isolation: Optional. Background only. "shared" uses the parent workspace, "worktree" creates a linked git worktree for isolation.
 - session_id: Existing Task session to continue (from previous task output). Continues agent with FULL CONTEXT PRESERVED - saves tokens, maintains continuity.
 - command: The command that triggered this task (optional, for slash command tracking).
 
@@ -83,6 +84,7 @@ Prompts MUST be in English.`
       description: tool.schema.string().describe("Short task description (3-5 words)"),
       prompt: tool.schema.string().describe("Full detailed prompt for the agent"),
       run_in_background: tool.schema.boolean().describe("true=async (returns task_id), false=sync (waits). Default: false"),
+      isolation: tool.schema.enum(["shared", "worktree"]).optional().describe("Background only. shared=use parent workspace, worktree=create isolated git worktree."),
       category: tool.schema.string().optional().describe(`REQUIRED if subagent_type not provided. Do NOT provide both category and subagent_type.`),
       subagent_type: tool.schema.string().optional().describe("REQUIRED if category not provided. Do NOT provide both category and subagent_type."),
       session_id: tool.schema.string().optional().describe("Existing Task session to continue"),

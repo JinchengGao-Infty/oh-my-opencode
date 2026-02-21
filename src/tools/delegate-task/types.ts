@@ -1,5 +1,5 @@
 import type { PluginInput } from "@opencode-ai/plugin"
-import type { BackgroundManager } from "../../features/background-agent"
+import type { BackgroundManager, BackgroundTaskIsolation } from "../../features/background-agent"
 import type { CategoriesConfig, GitMasterConfig, BrowserAutomationProvider, AgentOverrides } from "../../config/schema"
 import type {
   AvailableCategory,
@@ -14,6 +14,7 @@ export interface DelegateTaskArgs {
   category?: string
   subagent_type?: string
   run_in_background: boolean
+  isolation?: BackgroundTaskIsolation
   session_id?: string
   command?: string
   load_skills: string[]

@@ -55,6 +55,7 @@ export async function executeActionWithDeps(
 			action.description,
 			ctx.config,
 			ctx.serverUrl,
+			action.directory,
 		)
 		return {
 			success: result.success,
@@ -69,6 +70,7 @@ export async function executeActionWithDeps(
 		ctx.serverUrl,
 		action.targetPaneId,
 		action.splitDirection,
+		action.directory,
 	)
 
 	if (result.success) {

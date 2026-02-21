@@ -10,6 +10,7 @@ export async function replaceTmuxPane(
 	description: string,
 	config: TmuxConfig,
 	serverUrl: string,
+	directory?: string,
 ): Promise<SpawnPaneResult> {
 	const { log } = await import("../../logger")
 
@@ -34,9 +35,16 @@ export async function replaceTmuxPane(
 	})
 	await ctrlCProc.exited
 
-	const opencodeCmd = `opencode attach ${serverUrl} --session ${sessionId}`
+	const opencodeArgs = [
+		"opencode",
+		"attach",
+		serverUrl,
+		"--session",
+		sessionId,
+		...(directory ? ["--dir", directory] : []),
+	]
 
-	const proc = spawn([tmux, "respawn-pane", "-k", "-t", paneId, opencodeCmd], {
+	const proc = spawn([tmux, "respawn-pane", "-k", "-t", paneId, ...opencodeArgs], {
 		stdout: "pipe",
 		stderr: "pipe",
 	})
