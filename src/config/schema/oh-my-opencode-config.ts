@@ -35,6 +35,8 @@ export const OhMyOpenCodeConfigSchema = z.object({
   disabled_tools: z.array(z.string()).optional(),
   /** Enable hashline_edit tool/hook integrations (default: true at call site) */
   hashline_edit: z.boolean().optional(),
+  /** Enable model fallback on API errors (default: false). Set to true to enable automatic model switching when model errors occur. */
+  model_fallback: z.boolean().optional(),
   agents: AgentOverridesSchema.optional(),
   categories: CategoriesConfigSchema.optional(),
   claude_code: ClaudeCodeConfigSchema.optional(),
@@ -44,7 +46,12 @@ export const OhMyOpenCodeConfigSchema = z.object({
   auto_update: z.boolean().optional(),
   skills: SkillsConfigSchema.optional(),
   ralph_loop: RalphLoopConfigSchema.optional(),
-  runtime_fallback: RuntimeFallbackConfigSchema.optional(),
+  /**
+   * Enable runtime fallback (default: false)
+   * Set to false to disable, or use object for advanced config:
+   * { "enabled": true, "retry_on_errors": [400, 429], "timeout_seconds": 30 }
+   */
+  runtime_fallback: z.union([z.boolean(), RuntimeFallbackConfigSchema]).optional(),
   background_task: BackgroundTaskConfigSchema.optional(),
   notification: NotificationConfigSchema.optional(),
   babysitting: BabysittingConfigSchema.optional(),

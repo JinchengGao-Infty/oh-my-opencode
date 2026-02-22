@@ -529,6 +529,13 @@ Configure Language Server Protocol integration:
 
 Auto-switches to backup models on API errors.
 
+**Simple configuration** (enable/disable with defaults):
+```json
+{ "runtime_fallback": true }
+{ "runtime_fallback": false }
+```
+
+**Advanced configuration** (full control):
 ```json
 {
   "runtime_fallback": {
@@ -544,7 +551,7 @@ Auto-switches to backup models on API errors.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `enabled` | `true` | Enable runtime fallback |
+| `enabled` | `false` | Enable runtime fallback |
 | `retry_on_errors` | `[400,429,503,529]` | HTTP codes that trigger fallback. Also handles classified provider key errors. |
 | `max_fallback_attempts` | `3` | Max fallback attempts per session (1–20) |
 | `cooldown_seconds` | `60` | Seconds before retrying a failed model |
