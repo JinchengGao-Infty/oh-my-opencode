@@ -99,8 +99,6 @@ export function createPreemptiveCompactionHook(
         body: { providerID: targetProviderID, modelID: targetModelID, auto: true } as never,
         query: { directory: ctx.directory },
       })
-
-      compactedSessions.add(sessionID)
     } catch (error) {
       log("[preemptive-compaction] Compaction failed", { sessionID, error: String(error) })
     } finally {
