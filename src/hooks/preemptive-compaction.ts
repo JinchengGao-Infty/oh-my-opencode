@@ -2,7 +2,7 @@ import { log } from "../shared/logger"
 import type { OhMyOpenCodeConfig } from "../config"
 
 import { resolveCompactionModel } from "./shared/compaction-model-resolver"
-const DEFAULT_ACTUAL_LIMIT = 200_000
+const DEFAULT_ACTUAL_LIMIT = 256_000
 
 type ModelCacheStateLike = {
   anthropicContext1MEnabled: boolean
@@ -76,7 +76,7 @@ export function createPreemptiveCompactionHook(
         : DEFAULT_ACTUAL_LIMIT
 
     const lastTokens = cached.tokens
-    const totalInputTokens = (lastTokens?.input ?? 0) + (lastTokens?.cache?.read ?? 0)
+    const totalInputTokens = (lastTokens?.input ?? 0) + (lastTokens?.cache?.read ?? 0) + (lastTokens?.reasoning ?? 0)
     const usageRatio = totalInputTokens / actualLimit
 
     if (usageRatio < PREEMPTIVE_COMPACTION_THRESHOLD) return
