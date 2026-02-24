@@ -1549,30 +1549,40 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
           resolvedModel: model,
         })
 
-        try {
-          await this.client.session.promptAsync({
-            path: { id: task.parentSessionID },
-            body: {
-              noReply: !allComplete,
-              ...(agent !== undefined ? { agent } : {}),
-              ...(model !== undefined ? { model } : {}),
-              ...(resolvedTools ? { tools: resolvedTools } : {}),
-              parts: [createInternalAgentTextPart(notification)],
-            },
-          })
-          log("[background-agent] Sent notification to parent session:", {
-            taskId: task.id,
-            allComplete,
-            noReply: !allComplete,
-          })
-        } catch (error) {
-          if (isAbortedSessionError(error)) {
-            log("[background-agent] Parent session aborted while sending notification; continuing cleanup:", {
-              taskId: task.id,
-              parentSessionID: task.parentSessionID,
+        const MAX_NOTIFY_RETRIES = 3
+        for (let attempt = 1; attempt <= MAX_NOTIFY_RETRIES; attempt++) {
+          try {
+            await this.client.session.promptAsync({
+              path: { id: task.parentSessionID },
+              body: {
+                noReply: !allComplete,
+                ...(agent !== undefined ? { agent } : {}),
+                ...(model !== undefined ? { model } : {}),
+                ...(resolvedTools ? { tools: resolvedTools } : {}),
+                parts: [createInternalAgentTextPart(notification)],
+              },
             })
-          } else {
-            log("[background-agent] Failed to send notification:", error)
+            log("[background-agent] Sent notification to parent session:", {
+              taskId: task.id,
+              allComplete,
+              noReply: !allComplete,
+              attempt,
+            })
+            break
+          } catch (error) {
+            if (isAbortedSessionError(error)) {
+              log("[background-agent] Parent session aborted while sending notification; continuing cleanup:", {
+                taskId: task.id,
+                parentSessionID: task.parentSessionID,
+              })
+              break
+            }
+            if (attempt < MAX_NOTIFY_RETRIES) {
+              log(`[background-agent] Notification attempt ${attempt}/${MAX_NOTIFY_RETRIES} failed, retrying in 2s:`, error)
+              await new Promise(resolve => setTimeout(resolve, 2000))
+            } else {
+              log("[background-agent] Failed to send notification after all retries:", error)
+            }
           }
         }
       } else {
