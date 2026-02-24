@@ -1,7 +1,7 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { BackgroundTask, LaunchInput } from "./types"
 
-export const TASK_TTL_MS = 30 * 60 * 1000
+export const TASK_TTL_MS = 60 * 60 * 1000
 export const MIN_STABILITY_TIME_MS = 10 * 1000
 export const DEFAULT_STALE_TIMEOUT_MS = 180_000
 export const DEFAULT_MESSAGE_STALENESS_TIMEOUT_MS = 600_000
