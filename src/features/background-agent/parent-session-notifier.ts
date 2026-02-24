@@ -64,25 +64,39 @@ export async function notifyParentSession(
     resolvedModel: model,
   })
 
-  try {
-    await client.session.promptAsync({
-      path: { id: task.parentSessionID },
-      body: {
+  const MAX_RETRIES = 3
+  const RETRY_DELAY_MS = 2000
+  let lastError: unknown
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await client.session.promptAsync({
+        path: { id: task.parentSessionID },
+        body: {
+          noReply: !allComplete,
+          ...(agent !== undefined ? { agent } : {}),
+          ...(model !== undefined ? { model } : {}),
+          ...(tools ? { tools } : {}),
+          parts: [createInternalAgentTextPart(notification)],
+        },
+      })
+      log("[background-agent] Sent notification to parent session:", {
+        taskId: task.id,
+        allComplete,
         noReply: !allComplete,
-        ...(agent !== undefined ? { agent } : {}),
-        ...(model !== undefined ? { model } : {}),
-        ...(tools ? { tools } : {}),
-        parts: [createInternalAgentTextPart(notification)],
-      },
-    })
-
-    log("[background-agent] Sent notification to parent session:", {
-      taskId: task.id,
-      allComplete,
-      noReply: !allComplete,
-    })
-  } catch (error) {
-    log("[background-agent] Failed to send notification:", error)
+        attempt,
+      })
+      lastError = undefined
+      break
+    } catch (error) {
+      lastError = error
+      log(`[background-agent] Failed to send notification (attempt ${attempt}/${MAX_RETRIES}):`, error)
+      if (attempt < MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS * attempt))
+      }
+    }
+  }
+  if (lastError) {
+    log("[background-agent] All notification retries exhausted for task:", task.id)
   }
 
   if (!allComplete) return
